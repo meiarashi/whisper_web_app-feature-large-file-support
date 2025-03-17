@@ -1,0 +1,17 @@
+# Ignore Silero VAD model files
+models/silero_vad.jit
+models/*.pt
+*.pt
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output and uploads directories
+output/
+uploads/
+
+# Local environment files
+.env
+*.log 
