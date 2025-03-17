@@ -9,32 +9,6 @@ from pydub import AudioSegment
 import datetime
 import sys
 
-def process_long_audio(audio_path, chunk_size_ms=30000, overlap_ms=2000):
-    """
-    長い音声ファイルを適切な長さのチャンクに分割して処理します
-    chunk_size_ms: チャンクのサイズ（ミリ秒）
-    overlap_ms: オーバーラップの長さ（ミリ秒）
-    """
-    print(f"長い音声ファイルを処理しています: {audio_path}")
-    
-    # 音声ファイルの読み込み
-    audio = AudioSegment.from_file(audio_path)
-    audio_length_ms = len(audio)
-    audio_length_seconds = audio_length_ms / 1000
-    
-    print(f"音声の長さ: {audio_length_seconds:.2f}秒 ({datetime.timedelta(seconds=int(audio_length_seconds))})")
-    
-    # チャンクのリストを作成
-    chunks = []
-    for i in range(0, audio_length_ms, chunk_size_ms - overlap_ms):
-        chunk_start = i
-        chunk_end = min(i + chunk_size_ms, audio_length_ms)
-        chunk = audio[chunk_start:chunk_end]
-        chunks.append((chunk, chunk_start, chunk_end))
-    
-    print(f"音声を {len(chunks)} チャンクに分割しました")
-    return chunks
-
 def print_progress_bar(iteration, total, prefix='', suffix='', length=50, fill='█', print_end="\r"):
     """
     進捗バーを表示するための関数
@@ -83,140 +57,61 @@ def transcribe_audio(model, audio_path, output_dir=None, output_format="txt", la
     file_size = os.path.getsize(audio_path) / (1024 * 1024)  # MBに変換
     print(f"ファイルサイズ: {file_size:.2f} MB")
     
-    if file_size > 25:  # 25MB以上の場合は分割処理
-        print(f"ファイルサイズが大きいため分割処理を行います: {file_size:.2f}MB")
-        chunks = process_long_audio(audio_path)
-        
-        all_segments = []
-        for i, (chunk, start_ms, end_ms) in enumerate(chunks):
-            # 進捗バー表示
-            progress_percentage = (i / len(chunks)) * 100
-            print_progress_bar(i + 1, len(chunks), prefix=f'チャンク処理:', suffix=f'完了 ({i+1}/{len(chunks)})', length=40)
-            
-            # 一時ファイルに保存
-            temp_path = f"temp_chunk_{i}.wav"
-            chunk.export(temp_path, format="wav")
-            
-            print(f"\nチャンク {i+1}/{len(chunks)} を処理中... ({start_ms/1000:.2f}秒 - {end_ms/1000:.2f}秒)")
-            chunk_start_time = time.time()
-            
-            # 文字起こし
-            result = model.transcribe(temp_path, **options)
-            
-            chunk_elapsed_time = time.time() - chunk_start_time
-            print(f"チャンク {i+1} 処理完了: {chunk_elapsed_time:.2f}秒")
-            
-            # セグメントの時間を調整
-            for segment in result["segments"]:
-                segment["start"] += start_ms / 1000
-                segment["end"] += start_ms / 1000
-            
-            all_segments.extend(result["segments"])
-            
-            # 一時ファイルを削除
-            os.remove(temp_path)
-            
-            # 残り時間の予測
-            if i > 0:
-                avg_time_per_chunk = (time.time() - start_time) / (i + 1)
-                estimated_total_time = avg_time_per_chunk * len(chunks)
-                remaining_time = estimated_total_time - (time.time() - start_time)
-                print(f"推定残り時間: {datetime.timedelta(seconds=int(remaining_time))}")
-        
-        # 結果を統合
-        result = {
-            "text": " ".join(segment["text"] for segment in all_segments),
-            "segments": sorted(all_segments, key=lambda x: x["start"]),
-            "language": language
-        }
-    else:
-        # 通常処理（小さいファイル）
-        print("文字起こしを実行中...")
-        process_start_time = time.time()
-        
-        # 進捗表示（インクリメンタルでの進捗は難しいので10秒ごとに経過時間を表示）
-        def progress_reporter():
-            thread_start_time = time.time()
-            while True:
-                time.sleep(10)  # 10秒ごとに更新
-                elapsed = time.time() - thread_start_time
-                print(f"処理中... 経過時間: {datetime.timedelta(seconds=int(elapsed))}")
-                
-                # メモリ使用量の表示
-                if torch.cuda.is_available():
-                    print(f"GPU使用メモリ: {torch.cuda.memory_allocated() / 1024 / 1024:.2f} MB")
-        
-        # 進捗レポーターは使用しない（シンプルな実装のため）
-        # スレッドを使うと複雑になる可能性があります
-        
-        # 文字起こし実行
-        result = model.transcribe(audio_path, **options)
-        
-        process_elapsed_time = time.time() - process_start_time
-        print(f"文字起こし処理にかかった時間: {process_elapsed_time:.2f}秒")
+    # 通常の処理
+    print(f"モデル {model.model.name} で文字起こしを開始します")
+    result = model.transcribe(audio_path, **options)
     
-    # 結果の出力
-    if output_format:
+    # 結果の保存
+    if output_format is not None:
         writer = get_writer(output_format, output_dir)
         writer(result, output_path)
+        print(f"文字起こし結果を保存しました: {output_path}.{output_format}")
     
     elapsed_time = time.time() - start_time
-    print(f"文字起こしが完了しました: {elapsed_time:.2f}秒 ({datetime.timedelta(seconds=int(elapsed_time))})")
-    print(f"終了時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # 結果のプレビュー
-    preview_length = min(500, len(result["text"]))
-    print(f"\n文字起こし結果プレビュー (最初の{preview_length}文字):")
-    print(result["text"][:preview_length] + "...")
+    print(f"処理時間: {elapsed_time:.2f}秒 ({elapsed_time / 60:.2f}分)")
     
     return result
 
 def main():
-    parser = argparse.ArgumentParser(description="高性能日本語音声文字起こしツール")
-    parser.add_argument("audio_path", type=str, help="音声ファイルのパス")
-    parser.add_argument("--model", type=str, default="base", choices=["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"], help="使用するWhisperモデル")
+    parser = argparse.ArgumentParser(description="Whisperモデルを使用して音声ファイルを文字起こしします")
+    parser.add_argument("--model", type=str, default="large-v3", help="使用するWhisperモデル (tiny, base, small, medium, large)")
+    parser.add_argument("--model_dir", type=str, default=None, help="モデルを保存/読み込むディレクトリ")
+    parser.add_argument("--language", type=str, default="ja", help="音声の言語 (例: ja, en)")
+    parser.add_argument("--audio", type=str, required=True, help="文字起こしする音声ファイルのパス")
     parser.add_argument("--output_dir", type=str, default="output", help="出力ディレクトリ")
-    parser.add_argument("--output_format", type=str, default="all", help="出力形式 (txt, vtt, srt, tsv, json, all)")
-    parser.add_argument("--device", type=str, default=None, help="使用するデバイス (cuda, cpu)")
+    parser.add_argument("--output_format", type=str, default="txt", help="出力フォーマット (txt, srt, vtt, tsv, json)")
+    parser.add_argument("--device", type=str, default=None, help="使用するデバイス (cpu, cuda)")
     parser.add_argument("--verbose", action="store_true", help="詳細な出力を表示")
     
     args = parser.parse_args()
     
     # デバイスの設定
-    if args.device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
+    if args.device:
         device = args.device
+    else:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    print(f"使用デバイス: {device}")
-    print(f"Whisperモデル: {args.model}")
-    
-    # Pythonのバージョンとライブラリ情報の表示
-    print(f"Python バージョン: {sys.version}")
-    print(f"PyTorch バージョン: {torch.__version__}")
-    if torch.cuda.is_available():
-        print(f"CUDA バージョン: {torch.version.cuda}")
-    
-    print("\nモデルをロード中...")
-    model_load_start = time.time()
+    print(f"デバイス: {device}")
     
     # モデルのロード
-    model = whisper.load_model(args.model, device=device)
+    print(f"モデル '{args.model}' をロードしています...")
+    model_load_start = time.time()
+    
+    if args.model_dir:
+        model_path = os.path.join(args.model_dir, args.model)
+        model = whisper.load_model(args.model, device=device, download_root=model_path)
+    else:
+        model = whisper.load_model(args.model, device=device)
     
     model_load_time = time.time() - model_load_start
-    print(f"モデルのロードが完了しました: {model_load_time:.2f}秒")
+    print(f"モデルのロード完了 ({model_load_time:.2f}秒)")
     
-    # 文字起こしの実行
-    result = transcribe_audio(
-        model=model,
-        audio_path=args.audio_path,
-        output_dir=args.output_dir,
-        output_format=args.output_format,
-        language="ja",
-        verbose=args.verbose
-    )
+    # 音声ファイルの文字起こし
+    result = transcribe_audio(model, args.audio, args.output_dir, args.output_format, args.language, args.verbose)
     
-    print("\n文字起こし処理が正常に完了しました!")
+    # テキスト結果の表示
+    print("\n文字起こし結果:")
+    print(result["text"])
 
 if __name__ == "__main__":
     main()

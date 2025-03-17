@@ -8,6 +8,23 @@ import uuid
 import torchaudio
 import numpy as np
 from datetime import datetime
+import sys
+
+# モデル保存用のディレクトリ
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+
+# importをより明示的に行う
+try:
+    # 相対インポートを試す
+    from models.utils import get_speech_timestamps, read_audio
+except ImportError:
+    try:
+        # パスを追加して絶対インポートを試す
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from models.utils import get_speech_timestamps, read_audio
+    except ImportError:
+        # ランタイムにはload_silero_vad関数内で処理される
+        pass
 
 # OpenAI API設定
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -21,23 +38,17 @@ VAD_THRESHOLD = 0.5        # 音声検出の閾値
 VAD_MIN_SILENCE_DURATION_MS = 700  # 無音と判定する最小時間(ms)
 VAD_SPEECH_PAD_MS = 300    # 検出した音声の前後に追加するパディング(ms)
 
-# モデル保存用のディレクトリ
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-
 def ensure_model_dir():
     """モデル保存用ディレクトリを作成"""
     os.makedirs(MODEL_DIR, exist_ok=True)
 
 def load_silero_vad():
-    """Silero VADモデルをロード（ローカルキャッシュ優先）"""
+    """Silero VADモデルをロード（ローカルファイルのみ使用）"""
     ensure_model_dir()
     
     # モデルと関連ファイルのパスを設定
     model_path = os.path.join(MODEL_DIR, "silero_vad.jit")
     utils_script_path = os.path.join(MODEL_DIR, "utils.py")
-    
-    # 必要な関数を格納する辞書
-    utils_dict = {}
     
     # ローカルにモデルが存在するか確認
     if os.path.exists(model_path) and os.path.exists(utils_script_path):
@@ -46,51 +57,26 @@ def load_silero_vad():
             # JITモデルをロード
             model = torch.jit.load(model_path)
             
-            # utils.pyをインポート
-            import sys
-            sys.path.append(MODEL_DIR)
-            from utils import get_speech_timestamps, read_audio
-            
-            utils_dict["get_speech_timestamps"] = get_speech_timestamps
-            utils_dict["read_audio"] = read_audio
-            
-            return model, utils_dict["get_speech_timestamps"], utils_dict["read_audio"]
+            # utilsから関数をインポート
+            # 既にグローバルにインポートされているか確認
+            if 'get_speech_timestamps' in globals() and 'read_audio' in globals():
+                # グローバル変数から取得
+                return model, globals()['get_speech_timestamps'], globals()['read_audio']
+            else:
+                # モジュールを直接インポート
+                sys.path.insert(0, MODEL_DIR)
+                from utils import get_speech_timestamps, read_audio
+                return model, get_speech_timestamps, read_audio
+                
         except Exception as e:
             print(f"ローカルモデルのロード中にエラーが発生しました: {e}")
-            print("GitHubからモデルを再ダウンロードします...")
-            # エラーが発生した場合は、GitHubからダウンロードを試みる
-    
-    # GitHubからモデルをダウンロード
-    print("Silero VADモデルをGitHubからダウンロード中...")
-    try:
-        model, utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad',
-            model='silero_vad',
-            force_reload=False,
-            onnx=False
-        )
-        
-        (get_speech_timestamps, _, read_audio, _, _) = utils
-        
-        # モデルを保存
-        try:
-            # JITモデルとして保存
-            torch.jit.save(model, model_path)
-            
-            # utils.pyをコピー
-            repo_dir = os.path.join(torch.hub.get_dir(), "snakers4_silero-vad_master")
-            utils_script = os.path.join(repo_dir, "utils.py")
-            if os.path.exists(utils_script):
-                import shutil
-                shutil.copy(utils_script, utils_script_path)
-                print(f"モデルとユーティリティをローカルに保存しました: {MODEL_DIR}")
-        except Exception as e:
-            print(f"モデルの保存中にエラーが発生しました: {e}")
-        
-        return model, get_speech_timestamps, read_audio
-    except Exception as e:
-        print(f"GitHubからのモデルダウンロード中にエラーが発生しました: {e}")
-        raise e
+            print("エラー: Silero VADモデルをロードできませんでした。")
+            return None, None, None
+    else:
+        print(f"エラー: 必要なファイルが見つかりません。")
+        print(f"モデルファイル ({model_path}) または utils.py ({utils_script_path}) が存在しません。")
+        print("download_model.pyを実行してモデルをダウンロードしてください。")
+        return None, None, None
 
 def convert_audio_to_wav(input_file, output_file=None):
     """どんな形式の音声ファイルもWAV形式に変換"""
@@ -138,10 +124,15 @@ def process_with_vad(audio_file):
         # Silero VADモデルをロード
         try:
             model, get_speech_timestamps, read_audio = load_silero_vad()
+            if model is None:
+                # モデルのロードに失敗した場合
+                print("VADモデルのロードに失敗したため、VAD処理をスキップします。")
+                if temp_wav != audio_file and os.path.exists(temp_wav):
+                    os.remove(temp_wav)
+                return audio_file
         except Exception as e:
             print(f"モデルロード中にエラーが発生しました: {e}")
-            if "HTTP Error 403" in str(e) and "rate limit exceeded" in str(e):
-                print("GitHub APIのレート制限に達しました。しばらく待ってから再試行するか、USE_VAD_PREPROCESSING=false に設定して無効化してください。")
+            print("モデルをロードできませんでした。download_model.pyを実行してモデルをダウンロードしてください。")
             if temp_wav != audio_file and os.path.exists(temp_wav):
                 os.remove(temp_wav)
             return audio_file
