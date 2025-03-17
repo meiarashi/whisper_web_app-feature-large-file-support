@@ -1,9 +1,29 @@
 import os
+import sys
 import torch
+import torchaudio
+import requests
+from urllib.request import urlretrieve
+from tqdm import tqdm
+import numpy as np
 import shutil
 
 # モデル保存用のディレクトリ
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+UTILS_FILE_PATH = os.path.join(MODEL_DIR, "utils.py")
+
+# importをより明示的に行う
+try:
+    # 相対インポートを試す
+    from models.utils import get_speech_timestamps, read_audio
+except ImportError:
+    try:
+        # パスを追加して絶対インポートを試す
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from models.utils import get_speech_timestamps, read_audio
+    except ImportError:
+        # ランタイムに処理される
+        pass
 
 def ensure_model_dir():
     """モデル保存用ディレクトリを作成"""
@@ -197,13 +217,22 @@ def download_silero_vad():
         sample_rate = 16000
         dummy_tensor = torch.zeros(sample_rate)  # 1秒の無音データ
         
-        # 手動で作成したutils.pyをインポートしてテスト
-        import sys
-        sys.path.append(MODEL_DIR)
-        from utils import get_speech_timestamps as gst_local
-        
-        timestamps = gst_local(dummy_tensor, model, threshold=0.5, sampling_rate=sample_rate)
-        print("手動作成したutils.pyのテスト成功！")
+        # 手動で作成したutils.pyをテスト
+        try:
+            # グローバルにインポートされているか確認
+            if 'get_speech_timestamps' in globals():
+                # グローバル変数から取得
+                timestamps = globals()['get_speech_timestamps'](dummy_tensor, model, threshold=0.5, sampling_rate=sample_rate)
+            else:
+                # 直接インポート
+                sys.path.insert(0, MODEL_DIR)
+                from utils import get_speech_timestamps
+                timestamps = get_speech_timestamps(dummy_tensor, model, threshold=0.5, sampling_rate=sample_rate)
+            
+            print("手動作成したutils.pyのテスト成功！")
+        except Exception as e:
+            print(f"utils.pyテスト中にエラーが発生しました: {e}")
+            return False
         
         print("Silero VADモデルのダウンロードと保存が完了しました")
         return True

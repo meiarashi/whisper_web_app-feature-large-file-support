@@ -5,19 +5,35 @@ from typing import List
 
 def read_audio(path, sampling_rate: int = 16000):
     """Read audio file and convert to target sample rate"""
-    assert torchaudio.get_audio_backend() in ['sox_io', 'soundfile'],         f"Backend {torchaudio.get_audio_backend()} is not supported. Use 'sox_io' or 'soundfile'"
+    # 旧バージョンのtorchaudioの場合の警告を無視
+    # assert torchaudio.get_audio_backend() in ['sox_io', 'soundfile'],         f"Backend {torchaudio.get_audio_backend()} is not supported. Use 'sox_io' or 'soundfile'"
     
-    wav, sr = torchaudio.load(path)
-    
-    if wav.size(0) > 1:
-        wav = torch.mean(wav, dim=0, keepdim=True)
+    # 直接ファイルを読み込む
+    try:
+        wav, sr = torchaudio.load(path)
         
-    if sr != sampling_rate:
-        transform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=sampling_rate)
-        wav = transform(wav)
-        sr = sampling_rate
-
-    return wav.squeeze(0)
+        if wav.size(0) > 1:
+            wav = torch.mean(wav, dim=0, keepdim=True)
+            
+        if sr != sampling_rate:
+            transform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=sampling_rate)
+            wav = transform(wav)
+            sr = sampling_rate
+    
+        return wav.squeeze(0)
+    except Exception as e:
+        # mp3/m4a/その他形式のファイルの場合、別の方法を試す
+        try:
+            import librosa
+            y, sr = librosa.load(path, sr=sampling_rate, mono=True)
+            return torch.FloatTensor(y)
+        except:
+            # エラーの詳細を表示して再発生させる
+            print(f"ファイル読み込み失敗: {path}")
+            print(f"原因: {e}")
+            print("読み込みに必要なライブラリが不足している可能性があります。")
+            print("以下をインストールしてみてください: pip install librosa sox soundfile")
+            raise
 
 def get_speech_timestamps(audio: torch.Tensor,
                           model,
