@@ -160,41 +160,68 @@ def process_with_vad(audio_file):
         # 発話区間のみを抽出した新しい音声テンソルを作成
         speech_segments = []
         for ts in timestamps:
-            start_frame, end_frame = ts['start'], ts['end']
+            # インデックスを整数に変換
+            start_frame = int(ts['start'])
+            end_frame = int(ts['end'])
             segment = audio_tensor[start_frame:end_frame]
             speech_segments.append(segment)
         
         # 全ての発話区間を結合
         processed_audio = torch.cat(speech_segments) if len(speech_segments) > 1 else speech_segments[0]
         
-        # 処理済み音声を一時ファイルに保存
-        file_name = os.path.splitext(os.path.basename(audio_file))[0]
-        vad_output_file = os.path.join("uploads", f"vad_{file_name}_{uuid.uuid4().hex[:8]}.wav")
-        save_audio_tensor(processed_audio, vad_output_file)
+        # 処理済み音声を一時WAVファイルに保存
+        temp_output_wav = os.path.join(os.path.dirname(temp_wav), f"vad_temp_{os.path.basename(temp_wav)}")
+        processed_audio = processed_audio.unsqueeze(0)  # [samples] -> [1, samples]
+        torchaudio.save(temp_output_wav, processed_audio, VAD_SAMPLING_RATE)
         
-        # サイズ削減の効果を表示
-        original_size = os.path.getsize(audio_file) / (1024 * 1024)
-        processed_size = os.path.getsize(vad_output_file) / (1024 * 1024)
-        reduction = (1 - processed_size / original_size) * 100
+        # 出力ファイル名をm4a形式に設定
+        original_ext = os.path.splitext(audio_file)[1].lower()
+        if original_ext in ['.m4a', '.aac', '.mp3', '.mp4']:
+            # 元のファイルが圧縮形式なら同じ形式を維持
+            output_ext = original_ext
+        else:
+            # デフォルトはm4a
+            output_ext = '.m4a'
+            
+        output_file = os.path.join(os.path.dirname(temp_wav), f"vad_{os.path.splitext(os.path.basename(audio_file))[0]}{output_ext}")
         
-        print(f"VAD処理完了 - サイズ削減: {original_size:.1f}MB → {processed_size:.1f}MB ({reduction:.1f}%削減)")
+        # FFmpegを使ってm4aに変換（データ圧縮のため）
+        try:
+            print(f"VAD処理済み音声を圧縮形式に変換中...")
+            ffmpeg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe")
+            if not os.path.exists(ffmpeg_path):
+                ffmpeg_path = "ffmpeg"  # システムのFFmpegを使用
+                
+            import subprocess
+            command = [
+                ffmpeg_path, 
+                "-i", temp_output_wav, 
+                "-c:a", "aac", 
+                "-b:a", "128k",  # ビットレート指定（品質と容量のバランス）
+                "-y",  # 既存ファイルを上書き
+                output_file
+            ]
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print(f"圧縮完了: {output_file}")
+            
+            # 一時WAVファイルを削除
+            if os.path.exists(temp_output_wav):
+                os.remove(temp_output_wav)
+                
+        except Exception as e:
+            print(f"圧縮形式への変換エラー: {e}")
+            print("WAV形式のまま出力します")
+            output_file = temp_output_wav
         
-        # 一時ファイルの削除
+        # 一時ファイルを削除
         if temp_wav != audio_file and os.path.exists(temp_wav):
             os.remove(temp_wav)
             
-        # 明示的にメモリを解放（大きなテンソルを処理した後に役立つ）
-        del audio_tensor
-        del processed_audio
-        del speech_segments
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            
-        return vad_output_file
+        print(f"Silero VAD処理が完了しました: {output_file}")
+        return output_file
         
     except Exception as e:
-        print(f"VAD処理中にエラーが発生しました: {e}")
-        # エラー時は一時ファイルを削除して元のファイルを返す
+        print(f"Silero VAD処理中にエラーが発生しました: {e}")
         if temp_wav != audio_file and os.path.exists(temp_wav):
             os.remove(temp_wav)
         return audio_file
